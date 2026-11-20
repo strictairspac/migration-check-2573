@@ -3,13 +3,17 @@ x-app: &app
   build: ./backend
   environment:
     DATABASE_URL: postgresql+psycopg://migrate:migratepass@db:5432/migrationcheck
+    STANDBY_DATABASE_URL: postgresql+psycopg://migrate:migratepass@db-standby:5432/migrationcheck
     REDIS_URL: redis://redis:6379/0
     JWT_SECRET: ${JWT_SECRET:-migration-check-local-demo-secret-change-before-use}
     SEED_DEMO: ${SEED_DEMO:-true}
+    # 本地直接 uvicorn 启动（无 worker 容器）时置 true；compose 下由独立 worker 容器消费
+    EMBED_WORKER: ${EMBED_WORKER:-false}
   volumes:
     - artifacts:/artifacts
   depends_on:
     db: {condition: service_healthy}
+    db-standby: {condition: service_healthy}
     redis: {condition: service_healthy}
 services:
   db:
@@ -18,6 +22,17 @@ services:
     environment: {POSTGRES_DB: migrationcheck, POSTGRES_USER: migrate, POSTGRES_PASSWORD: migratepass}
     ports: ["${DB_PORT:-17748}:5432"]
     volumes: ["dbdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U migrate -d migrationcheck"]
+      interval: 5s
+      timeout: 4s
+      retries: 35
+  db-standby:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-migration-check}-db-standby
+    environment: {POSTGRES_DB: migrationcheck, POSTGRES_USER: migrate, POSTGRES_PASSWORD: migratepass}
+    ports: ["${STANDBY_DB_PORT:-17749}:5432"]
+    volumes: ["dbdata_standby:/var/lib/postgresql/data"]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U migrate -d migrationcheck"]
       interval: 5s
@@ -46,6 +61,13 @@ services:
     <<: *app
     container_name: ${COMPOSE_PROJECT_NAME:-migration-check}-worker
     command: ["python", "-m", "src.worker"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://migrate:migratepass@db:5432/migrationcheck
+      STANDBY_DATABASE_URL: postgresql+psycopg://migrate:migratepass@db-standby:5432/migrationcheck
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET: ${JWT_SECRET:-migration-check-local-demo-secret-change-before-use}
+      SEED_DEMO: ${SEED_DEMO:-false}
+      EMBED_WORKER: "false"
     healthcheck:
       test: ["CMD", "python", "-c", "import os,time; assert time.time()-os.stat('/tmp/worker-heartbeat').st_mtime<60"]
       interval: 5s
@@ -53,6 +75,7 @@ services:
       retries: 20
     depends_on:
       db: {condition: service_healthy}
+      db-standby: {condition: service_healthy}
       redis: {condition: service_healthy}
       backend: {condition: service_healthy}
   frontend:
@@ -68,5 +91,6 @@ services:
       retries: 20
 volumes:
   dbdata:
+  dbdata_standby:
   redisdata:
   artifacts:

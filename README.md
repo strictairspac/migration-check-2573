@@ -44,6 +44,16 @@ seed含三账号、三批次（三种正常/异常/空输入）、三映射。�
 
 受控场景演示旧字段到新目标结构的逻辑迁移，数据库真实保存源/映射/目标/对账。不能连接远端数据库，不宣称生产异构迁移或灾备能力。
 
+## 主副库交接（检验库维护不停查询）
+第05页「主副库交接台」面向检验库维护：在页面发起把写入从主库切到副库，副库追平前主库照常接单，drain 交接瞬间可短暂停写（API 返回 423，可重试），查询全程可用且**同一次查询只绑定一个库**（副库健康且零延迟读副库，否则读主库，绝不扇出两库）。
+
+- **应用级逻辑复制**：业务表写入在同一事务追加 `replication_journal`（全局单调 LSN），副库按 LSN 逐条幂等重放、以 `node_meta.applied_lsn` 记录水位，崩溃后从断点续跑。
+- **状态机可中断续跑**：`queued → syncing → draining → flipping → completed`，每阶段先落库 `switch_orders` 再改 Redis 协调状态；进程崩溃重启后从库内订单引导并重新入队，重试同一单幂等复用、不重复换主。
+- **旧主库永久栅栏**：翻转写指针同时提升任期号（term）。引擎连接层 `before_cursor_execute` 拦截非当前写库的任何 INSERT/UPDATE/DELETE（复制重放以线程局部上下文豁免），旧库重新连上、即便绕过 ORM 直连引擎也无法接写；会话提交前再做一道任期栅栏。
+- **页面可观测**：`GET /switch/status` 返回当前写入位置（writer_node）、本次读库、各节点健康/水位、复制延迟与 `stuck_reason` 卡住原因；`/switch/orders` 查交接回执。已确认的迁移记录、目标行、逻辑备份恢复在切换后于新主库均可查。
+- 本地无 Docker/Redis 时，设置项缺省退化为双 sqlite 文件（`SQLITE_DATA_DIR`）+ 进程内 fakeredis 模拟两节点；生产 Compose 注入双 PostgreSQL DSN（`DATABASE_URL` / `STANDBY_DATABASE_URL`）与真实 Redis。`POST /switch/fault/node` 仅用于本地/验收的节点中断演练，生产网关应屏蔽。
+- 验收：`pytest tests/`（21 项，含交接窗口落库、切换回执丢失、旧库重上线三大点名场景）与 `python scripts/verify_switchover.py`（27 项端到端断言）。
+
 ## 工程与开发
 Python3.11/FastAPI/SQLAlchemy/psycopg/Redis/PostgreSQL16，原生HTML/CSS/JS，nginx1.27。exact五服务frontend/backend/worker/db/redis均healthcheck，数据库/Redis/共享产物命名卷；依赖健康后启动。请求追踪、全局错误、JWT授权和业务审计横切。
 

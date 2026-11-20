@@ -4,3 +4,7 @@ SQLAlchemy==2.0.36
 psycopg[binary]==3.2.3
 redis==5.2.1
 PyJWT==2.10.1
+# 本地无 Redis 时的进程内降级队列与协调存储；生产注入 REDIS_URL 后不启用
+fakeredis==2.26.3
+httpx==0.28.1
+pytest==8.3.4
